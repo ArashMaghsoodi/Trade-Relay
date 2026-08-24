@@ -18,11 +18,13 @@ if __package__ in (None, ""):
     from trade_relay.models import EventType, SignalEvent
     from trade_relay.notifier import Notifier
     from trade_relay.parser import parse_signal_message
+    from trade_relay.runtime_state import RuntimeState, process_signal_event
 else:
     from .config import Settings
     from .models import EventType, SignalEvent
     from .notifier import Notifier
     from .parser import parse_signal_message
+    from .runtime_state import RuntimeState, process_signal_event
 
 
 @dataclass(slots=True)
@@ -30,6 +32,7 @@ class RelayRuntime:
     settings: Settings
     telethon_client: TelegramClient
     notifier: Notifier
+    state: RuntimeState
 
 
 def setup_logging(level: str) -> None:
@@ -130,9 +133,7 @@ async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not raw.strip():
             continue
         classification = classify_message(raw)
-        rows.append(
-            f"[{msg.id}] {classification}\n  {trim_one_line(raw)}"
-        )
+        rows.append(f"[{msg.id}] {classification}\n  {trim_one_line(raw)}")
 
     if not rows:
         lines.append("(No text messages found in this range)")
@@ -141,6 +142,96 @@ async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines.extend(rows)
 
     await safe_reply(update, "\n".join(lines))
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    state = runtime.state
+    await safe_reply(
+        update,
+        "Relay status:\n"
+        f"mode={runtime.settings.trading_mode}\n"
+        f"one_position_per_symbol={state.one_position_per_symbol}\n"
+        f"setups_cached={len(state.setups_by_symbol)}\n"
+        f"open_symbols={len(state.open_symbols)} ({', '.join(sorted(state.open_symbols)) if state.open_symbols else '-'})\n"
+        f"recent_decisions={len(state.recent_decisions)}",
+    )
+
+
+async def cmd_recent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    n = 15
+    if context.args:
+        try:
+            n = max(1, min(50, int(context.args[0])))
+        except ValueError:
+            await safe_reply(update, "Usage: /recent [count]  (count must be an integer, max 50)")
+            return
+
+    decisions = list(runtime.state.recent_decisions)[-n:]
+    if not decisions:
+        await safe_reply(update, "No decisions yet.")
+        return
+
+    lines = [f"Last {len(decisions)} decisions:"]
+    for item in decisions:
+        lines.append(f"- {item}")
+
+    await safe_reply(update, "\n".join(lines))
+
+
+async def cmd_replaylast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    n = 15
+    if context.args:
+        try:
+            n = max(1, min(50, int(context.args[0])))
+        except ValueError:
+            await safe_reply(update, "Usage: /replaylast [count]  (count must be an integer, max 50)")
+            return
+
+    if not runtime.settings.vip_channel_ids:
+        await safe_reply(update, "VIP_CHANNEL_IDS is empty")
+        return
+
+    channel_id = runtime.settings.vip_channel_ids[0]
+    messages = []
+    async for msg in runtime.telethon_client.iter_messages(channel_id, limit=n):
+        if (msg.raw_text or "").strip():
+            messages.append(msg)
+
+    if not messages:
+        await safe_reply(update, "No text messages found in this range.")
+        return
+
+    messages.reverse()
+    rows: list[str] = []
+    processed = 0
+    for msg in messages:
+        text = msg.raw_text or ""
+        parsed = parse_signal_message(text)
+        if parsed is None:
+            continue
+        key = f"replay:{channel_id}:{msg.id}"
+        decision = process_signal_event(runtime.state, parsed, key)
+        rows.append(f"[{msg.id}] {summarize_event(parsed)} => {decision}")
+        processed += 1
+
+    if processed == 0:
+        await safe_reply(update, "No parseable signal events found in selected range.")
+        return
+
+    header = f"Replayed {processed} signal event(s) from last {n} messages:"
+    await safe_reply(update, "\n".join([header] + rows))
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -154,6 +245,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/ping - health check\n"
         "/last - classify last 15 messages from first VIP channel\n"
         "/last 30 - classify last 30 messages (max 50)\n"
+        "/status - show runtime state counters\n"
+        "/recent - show last 15 state decisions\n"
+        "/replaylast - reprocess last 15 channel messages through state engine\n"
+        "/replaylast 30 - reprocess last 30 messages (max 50)\n"
         "/help - show this help",
     )
 
@@ -171,7 +266,12 @@ async def run_listener(settings: Settings) -> None:
         settings.telegram_api_hash,
     )
 
-    runtime = RelayRuntime(settings=settings, telethon_client=telethon_client, notifier=notifier)
+    runtime = RelayRuntime(
+        settings=settings,
+        telethon_client=telethon_client,
+        notifier=notifier,
+        state=RuntimeState(one_position_per_symbol=settings.one_position_per_symbol),
+    )
 
     @telethon_client.on(events.NewMessage(chats=settings.vip_channel_ids))
     async def on_new_message(event: events.NewMessage.Event) -> None:
@@ -184,8 +284,10 @@ async def run_listener(settings: Settings) -> None:
             return
 
         summary = summarize_event(parsed)
-        log.info("%s | msg_id=%s", summary, event.id)
-        await runtime.notifier.send(summary)
+        message_key = f"live:{event.chat_id}:{event.id}"
+        decision = process_signal_event(runtime.state, parsed, message_key)
+        log.info("%s | %s | msg_id=%s", summary, decision, event.id)
+        await runtime.notifier.send(f"{summary}\n{decision}")
 
     await telethon_client.start(phone=settings.telegram_phone)
 
@@ -193,6 +295,9 @@ async def run_listener(settings: Settings) -> None:
     bot_app.bot_data["runtime"] = runtime
     bot_app.add_handler(CommandHandler("ping", cmd_ping))
     bot_app.add_handler(CommandHandler("last", cmd_last))
+    bot_app.add_handler(CommandHandler("status", cmd_status))
+    bot_app.add_handler(CommandHandler("recent", cmd_recent))
+    bot_app.add_handler(CommandHandler("replaylast", cmd_replaylast))
     bot_app.add_handler(CommandHandler("help", cmd_help))
 
     await bot_app.initialize()
@@ -208,7 +313,7 @@ async def run_listener(settings: Settings) -> None:
         "Trade Relay listener started\n"
         f"Account: {username}\n"
         f"Watching channels: {', '.join(map(str, settings.vip_channel_ids))}\n"
-        "Bot commands: /ping /last /help"
+        "Bot commands: /ping /last /status /recent /replaylast /help"
     )
 
     log.info(startup_message.replace("\n", " | "))

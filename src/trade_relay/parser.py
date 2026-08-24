@@ -9,6 +9,9 @@ _SYMBOL_SIDE_RE = re.compile(r"#\s*([A-Z0-9_\-]+/[A-Z0-9_\-]+)\s*\((LONG|SHORT)\
 _SYMBOL_ONLY_RE = re.compile(r"#\s*([A-Z0-9_\-]+/[A-Z0-9_\-]+)", re.IGNORECASE)
 _SIDE_RE = re.compile(r"\b(LONG|SHORT)\b", re.IGNORECASE)
 _FLOAT_RE = r"([0-9]+(?:\.[0-9]+)?)"
+# Delimiter between two numeric values in provider messages can be '-', '~', '–', emojis,
+# replacement chars (�), or mixed symbols.
+_RANGE_DELIM_RE = r"[^0-9\n]{1,12}"
 
 
 def _to_side(value: str) -> Side:
@@ -30,7 +33,11 @@ def _extract_symbol_and_side(text: str) -> tuple[Optional[str], Optional[Side]]:
 
 
 def parse_signal_message(text: str) -> Optional[SignalEvent]:
-    cleaned = text.replace("\u200f", " ").replace("\u200e", " ")
+    cleaned = (
+        text.replace("\u200f", " ")
+        .replace("\u200e", " ")
+        .replace("\ufeff", " ")
+    )
     upper = cleaned.upper()
 
     if "ENTRY 1 ACHIEVED" in upper:
@@ -69,13 +76,22 @@ def parse_setup_message(text: str) -> Optional[SignalSetup]:
     if not symbol or not side:
         return None
 
-    entry_match = re.search(rf"ENTER\s*PRICE\s*:\s*{_FLOAT_RE}\s*[~\-–]\s*{_FLOAT_RE}", text, re.IGNORECASE)
+    upper = text.upper()
+    # Provider marks setup posts with #Signal at the bottom; this is a strong setup hint.
+    has_signal_tag = "#SIGNAL" in upper
+
+    entry_match = re.search(
+        rf"ENTER\s*PRICE\s*:\s*{_FLOAT_RE}\s*{_RANGE_DELIM_RE}\s*{_FLOAT_RE}",
+        text,
+        re.IGNORECASE,
+    )
     tp1_match = re.search(rf"TP\s*1\s*:\s*{_FLOAT_RE}", text, re.IGNORECASE)
     tp2_match = re.search(rf"TP\s*2\s*:\s*{_FLOAT_RE}", text, re.IGNORECASE)
     tp3_match = re.search(rf"TP\s*3\s*:\s*{_FLOAT_RE}", text, re.IGNORECASE)
     sl_match = re.search(rf"STOP\s*LOSS\s*:\s*{_FLOAT_RE}", text, re.IGNORECASE)
 
-    if not (entry_match and tp1_match and tp2_match and sl_match):
+    # For robustness: setup must always include #Signal and core numeric fields.
+    if not (has_signal_tag and entry_match and tp1_match and tp2_match and sl_match):
         return None
 
     entry_low = float(entry_match.group(1))

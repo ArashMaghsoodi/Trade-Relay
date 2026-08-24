@@ -15,6 +15,24 @@ SETUP_TEXT = """LBANK Futures 🔥SHORT
 ⚠️1% Risk (Isolated 4X)
 #Signal"""
 
+SETUP_TEXT_WEIRD_DELIMITER = """LBANK Futures ��SHORT
+�� #BTC/USDT
+��Enter price: 79483 �� 79810
+✅ TP1: 79165
+��TP2 : 78810
+��TP3: 78490
+��Normal Stop Loss: 80148
+⚠️1% Risk (Isolated 17X)
+#Signal"""
+
+SETUP_NO_SIGNAL_TAG = """LBANK Futures SHORT
+#BTC/USDT
+Enter price: 79483 - 79810
+TP1: 79165
+TP2: 78810
+TP3: 78490
+Normal Stop Loss: 80148"""
+
 ENTRY_TRIGGER_TEXT = "#ENA/USDT (SHORT)\nEntry 1 Achieved ✅"
 
 TARGET_HIT_TEXT = """#ENA/USDT (SHORT)
@@ -43,8 +61,26 @@ class TestParser(unittest.TestCase):
         self.assertAlmostEqual(setup.entry_high, 0.17960)
         self.assertAlmostEqual(setup.tp1, 0.17364)
         self.assertAlmostEqual(setup.tp2, 0.17050)
-        # self.assertAlmostEqual(setup.tp3, 0.16760)
+        self.assertAlmostEqual(setup.tp3, 0.16760)
         self.assertAlmostEqual(setup.stop_loss, 0.18254)
+
+    def test_parses_setup_with_replacement_char_delimiter(self):
+        event = parse_signal_message(SETUP_TEXT_WEIRD_DELIMITER)
+        self.assertIsNotNone(event)
+        assert event is not None and event.event_type == EventType.SETUP and event.setup is not None
+
+        setup = event.setup
+        self.assertEqual(setup.symbol, "BTC/USDT")
+        self.assertEqual(setup.side, Side.SHORT)
+        self.assertAlmostEqual(setup.entry_low, 79483)
+        self.assertAlmostEqual(setup.entry_high, 79810)
+        self.assertAlmostEqual(setup.tp1, 79165)
+        self.assertAlmostEqual(setup.tp2, 78810)
+        self.assertAlmostEqual(setup.tp3, 78490)
+        self.assertAlmostEqual(setup.stop_loss, 80148)
+
+    def test_requires_signal_tag_for_setup(self):
+        self.assertIsNone(parse_signal_message(SETUP_NO_SIGNAL_TAG))
 
     def test_parses_entry_trigger(self):
         event = parse_signal_message(ENTRY_TRIGGER_TEXT)

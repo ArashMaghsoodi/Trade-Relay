@@ -15,6 +15,7 @@ env/
 
 # Local environment
 .env
+*.session
 
 # OS / editor
 .DS_Store

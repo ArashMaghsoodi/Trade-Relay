@@ -154,9 +154,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         update,
         "Relay status:\n"
         f"mode={runtime.settings.trading_mode}\n"
+        f"paused={state.paused}\n"
         f"one_position_per_symbol={state.one_position_per_symbol}\n"
         f"setups_cached={len(state.setups_by_symbol)}\n"
         f"open_symbols={len(state.open_symbols)} ({', '.join(sorted(state.open_symbols)) if state.open_symbols else '-'})\n"
+        f"tracked_positions={len(state.positions_by_symbol)}\n"
         f"recent_decisions={len(state.recent_decisions)}",
     )
 
@@ -234,6 +236,44 @@ async def cmd_replaylast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await safe_reply(update, "\n".join([header] + rows))
 
 
+async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    state = runtime.state
+    if not state.positions_by_symbol:
+        await safe_reply(update, "No tracked positions yet.")
+        return
+
+    lines = ["Tracked positions:"]
+    for symbol, pos in sorted(state.positions_by_symbol.items()):
+        lines.append(
+            f"- {symbol} {pos.side} | status={pos.entry_status} | open={pos.size_percent_open:.1f}% "
+            f"| tp1_hit={pos.tp1_hit} | sl_be={pos.sl_moved_to_breakeven}"
+        )
+
+    await safe_reply(update, "\n".join(lines))
+
+
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    decision = runtime.state.pause()
+    await safe_reply(update, f"OK: {decision}")
+
+
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    decision = runtime.state.resume()
+    await safe_reply(update, f"OK: {decision}")
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     runtime: RelayRuntime = context.bot_data["runtime"]
     if not is_allowed(update, runtime.settings):
@@ -249,6 +289,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/recent - show last 15 state decisions\n"
         "/replaylast - reprocess last 15 channel messages through state engine\n"
         "/replaylast 30 - reprocess last 30 messages (max 50)\n"
+        "/positions - show tracked virtual positions\n"
+        "/pause - pause new entry acceptance\n"
+        "/resume - resume new entry acceptance\n"
         "/help - show this help",
     )
 
@@ -298,6 +341,9 @@ async def run_listener(settings: Settings) -> None:
     bot_app.add_handler(CommandHandler("status", cmd_status))
     bot_app.add_handler(CommandHandler("recent", cmd_recent))
     bot_app.add_handler(CommandHandler("replaylast", cmd_replaylast))
+    bot_app.add_handler(CommandHandler("positions", cmd_positions))
+    bot_app.add_handler(CommandHandler("pause", cmd_pause))
+    bot_app.add_handler(CommandHandler("resume", cmd_resume))
     bot_app.add_handler(CommandHandler("help", cmd_help))
 
     await bot_app.initialize()
@@ -313,7 +359,7 @@ async def run_listener(settings: Settings) -> None:
         "Trade Relay listener started\n"
         f"Account: {username}\n"
         f"Watching channels: {', '.join(map(str, settings.vip_channel_ids))}\n"
-        "Bot commands: /ping /last /status /recent /replaylast /help"
+        "Bot commands: /ping /last /status /recent /replaylast /positions /pause /resume /help"
     )
 
     log.info(startup_message.replace("\n", " | "))

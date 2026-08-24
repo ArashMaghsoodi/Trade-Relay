@@ -2,18 +2,37 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from .models import EventType, SignalEvent, SignalSetup
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(slots=True)
+class VirtualPosition:
+    symbol: str
+    side: str
+    entry_status: str = "OPEN"
+    size_percent_open: float = 100.0
+    tp1_hit: bool = False
+    sl_moved_to_breakeven: bool = False
+    opened_at: str = field(default_factory=_utc_now_iso)
+    last_event_at: str = field(default_factory=_utc_now_iso)
 
 
 @dataclass(slots=True)
 class RuntimeState:
     one_position_per_symbol: bool = True
+    paused: bool = False
     setups_by_symbol: dict[str, SignalSetup] = field(default_factory=dict)
     open_symbols: set[str] = field(default_factory=set)
+    positions_by_symbol: dict[str, VirtualPosition] = field(default_factory=dict)
     processed_message_keys: deque[str] = field(default_factory=lambda: deque(maxlen=2000))
     _processed_lookup: set[str] = field(default_factory=set)
-    recent_decisions: deque[str] = field(default_factory=lambda: deque(maxlen=100))
+    recent_decisions: deque[str] = field(default_factory=lambda: deque(maxlen=150))
 
     def seen_message(self, message_key: str) -> bool:
         if message_key in self._processed_lookup:
@@ -29,6 +48,18 @@ class RuntimeState:
 
     def add_recent(self, value: str) -> None:
         self.recent_decisions.append(value)
+
+    def pause(self) -> str:
+        self.paused = True
+        decision = "RELAY_PAUSED"
+        self.add_recent(decision)
+        return decision
+
+    def resume(self) -> str:
+        self.paused = False
+        decision = "RELAY_RESUMED"
+        self.add_recent(decision)
+        return decision
 
 
 def process_signal_event(state: RuntimeState, event: SignalEvent, message_key: str) -> str:
@@ -46,6 +77,11 @@ def process_signal_event(state: RuntimeState, event: SignalEvent, message_key: s
         return decision
 
     if event.event_type == EventType.ENTRY_TRIGGER:
+        if state.paused:
+            decision = f"ENTRY_SKIPPED_RELAY_PAUSED {symbol} {event.side.value}"
+            state.add_recent(decision)
+            return decision
+
         if symbol not in state.setups_by_symbol:
             decision = f"ENTRY_SKIPPED_NO_SETUP {symbol} {event.side.value}"
             state.add_recent(decision)
@@ -57,6 +93,7 @@ def process_signal_event(state: RuntimeState, event: SignalEvent, message_key: s
             return decision
 
         state.open_symbols.add(symbol)
+        state.positions_by_symbol[symbol] = VirtualPosition(symbol=symbol, side=event.side.value)
         decision = f"ENTRY_ACCEPTED_DRYRUN {symbol} {event.side.value}"
         state.add_recent(decision)
         return decision
@@ -68,12 +105,25 @@ def process_signal_event(state: RuntimeState, event: SignalEvent, message_key: s
             state.add_recent(decision)
             return decision
 
+        position = state.positions_by_symbol.get(symbol)
+        if position is not None:
+            position.last_event_at = _utc_now_iso()
+
         if target <= 1:
+            if position is not None:
+                position.tp1_hit = True
+                position.sl_moved_to_breakeven = True
+                position.size_percent_open = 50.0
+                position.entry_status = "OPEN_PARTIAL"
             decision = f"TP1_PLAN {symbol} close=50% sl=breakeven"
             state.add_recent(decision)
             return decision
 
         state.open_symbols.discard(symbol)
+        if position is not None:
+            position.size_percent_open = 0.0
+            position.entry_status = "CLOSED_TP2"
+            position.last_event_at = _utc_now_iso()
         decision = f"TP2_CLOSE_REMAINING {symbol} close=100%"
         state.add_recent(decision)
         return decision
@@ -81,6 +131,11 @@ def process_signal_event(state: RuntimeState, event: SignalEvent, message_key: s
     if event.event_type == EventType.STOPPED_OUT:
         if symbol in state.open_symbols:
             state.open_symbols.discard(symbol)
+            position = state.positions_by_symbol.get(symbol)
+            if position is not None:
+                position.size_percent_open = 0.0
+                position.entry_status = "CLOSED_SL"
+                position.last_event_at = _utc_now_iso()
             decision = f"STOPPED_OUT_CLOSED {symbol}"
             state.add_recent(decision)
             return decision

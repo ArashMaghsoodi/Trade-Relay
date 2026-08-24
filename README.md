@@ -26,12 +26,25 @@ Current status: Milestone 1 / Step 1 scaffold completed.
 - Start live listener:
   - `PYTHONPATH=src python -m trade_relay.main`
 
-Behavior in Step 2.1:
+Behavior in current MVP:
 - Watches `VIP_CHANNEL_IDS` via Telethon user session.
 - Parses signal/setup/entry/target/stop messages.
-- Logs parsed events to terminal.
-- Sends plain-text event summaries to your control bot chat/user ID.
+- Applies in-memory state engine (dedup, setup cache, one-position-per-symbol).
+- Supports relay pause/resume for new entries.
+- Tracks virtual positions (dry-run lifecycle): TP1 partial + BE, TP2 close, SL close.
+- Logs parsed events + decisions to terminal.
+- Sends plain-text event summaries + decisions to your control bot chat/user ID.
 - Does not place exchange orders yet.
+
+## Bot test commands (temporary)
+- `/ping`
+- `/last [count]`
+- `/status`
+- `/recent [count]`
+- `/replaylast [count]`
+- `/positions`
+- `/pause`
+- `/resume`
 
 ## Notes
 - `.env` is git-ignored.

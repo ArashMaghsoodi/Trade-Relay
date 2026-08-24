@@ -3,14 +3,22 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 from telethon import TelegramClient, events
 
-from .config import Settings
-from .models import EventType, SignalEvent
-from .notifier import Notifier
-from .parser import parse_signal_message
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from trade_relay.config import Settings
+    from trade_relay.models import EventType, SignalEvent
+    from trade_relay.notifier import Notifier
+    from trade_relay.parser import parse_signal_message
+else:
+    from .config import Settings
+    from .models import EventType, SignalEvent
+    from .notifier import Notifier
+    from .parser import parse_signal_message
 
 
 def setup_logging(level: str) -> None:

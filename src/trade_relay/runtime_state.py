@@ -21,6 +21,20 @@ class VirtualPosition:
     sl_moved_to_breakeven: bool = False
     opened_at: str = field(default_factory=_utc_now_iso)
     last_event_at: str = field(default_factory=_utc_now_iso)
+    closed_at: str | None = None
+    close_reason: str | None = None
+
+
+@dataclass(slots=True)
+class ClosedPositionRecord:
+    symbol: str
+    side: str
+    final_status: str
+    opened_at: str
+    closed_at: str
+    close_reason: str
+    tp1_hit: bool
+    sl_moved_to_breakeven: bool
 
 
 @dataclass(slots=True)
@@ -30,9 +44,10 @@ class RuntimeState:
     setups_by_symbol: dict[str, SignalSetup] = field(default_factory=dict)
     open_symbols: set[str] = field(default_factory=set)
     positions_by_symbol: dict[str, VirtualPosition] = field(default_factory=dict)
+    closed_positions: deque[ClosedPositionRecord] = field(default_factory=lambda: deque(maxlen=400))
     processed_message_keys: deque[str] = field(default_factory=lambda: deque(maxlen=2000))
     _processed_lookup: set[str] = field(default_factory=set)
-    recent_decisions: deque[str] = field(default_factory=lambda: deque(maxlen=150))
+    recent_decisions: deque[str] = field(default_factory=lambda: deque(maxlen=300))
 
     def seen_message(self, message_key: str) -> bool:
         if message_key in self._processed_lookup:
@@ -60,6 +75,33 @@ class RuntimeState:
         decision = "RELAY_RESUMED"
         self.add_recent(decision)
         return decision
+
+
+def _close_position(state: RuntimeState, symbol: str, final_status: str, close_reason: str) -> None:
+    state.open_symbols.discard(symbol)
+    position = state.positions_by_symbol.get(symbol)
+    if position is None:
+        return
+
+    now = _utc_now_iso()
+    position.size_percent_open = 0.0
+    position.entry_status = final_status
+    position.last_event_at = now
+    position.closed_at = now
+    position.close_reason = close_reason
+
+    state.closed_positions.append(
+        ClosedPositionRecord(
+            symbol=position.symbol,
+            side=position.side,
+            final_status=position.entry_status,
+            opened_at=position.opened_at,
+            closed_at=position.closed_at,
+            close_reason=position.close_reason,
+            tp1_hit=position.tp1_hit,
+            sl_moved_to_breakeven=position.sl_moved_to_breakeven,
+        )
+    )
 
 
 def process_signal_event(state: RuntimeState, event: SignalEvent, message_key: str) -> str:
@@ -119,23 +161,14 @@ def process_signal_event(state: RuntimeState, event: SignalEvent, message_key: s
             state.add_recent(decision)
             return decision
 
-        state.open_symbols.discard(symbol)
-        if position is not None:
-            position.size_percent_open = 0.0
-            position.entry_status = "CLOSED_TP2"
-            position.last_event_at = _utc_now_iso()
+        _close_position(state, symbol, final_status="CLOSED_TP2", close_reason="TARGET_2_PLUS_REACHED")
         decision = f"TP2_CLOSE_REMAINING {symbol} close=100%"
         state.add_recent(decision)
         return decision
 
     if event.event_type == EventType.STOPPED_OUT:
         if symbol in state.open_symbols:
-            state.open_symbols.discard(symbol)
-            position = state.positions_by_symbol.get(symbol)
-            if position is not None:
-                position.size_percent_open = 0.0
-                position.entry_status = "CLOSED_SL"
-                position.last_event_at = _utc_now_iso()
+            _close_position(state, symbol, final_status="CLOSED_SL", close_reason="STOPPED_OUT")
             decision = f"STOPPED_OUT_CLOSED {symbol}"
             state.add_recent(decision)
             return decision

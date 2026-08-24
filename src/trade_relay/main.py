@@ -19,12 +19,14 @@ if __package__ in (None, ""):
     from trade_relay.notifier import Notifier
     from trade_relay.parser import parse_signal_message
     from trade_relay.runtime_state import RuntimeState, process_signal_event
+    from trade_relay.state_repo import StateRepository
 else:
     from .config import Settings
     from .models import EventType, SignalEvent
     from .notifier import Notifier
     from .parser import parse_signal_message
     from .runtime_state import RuntimeState, process_signal_event
+    from .state_repo import StateRepository
 
 
 @dataclass(slots=True)
@@ -33,6 +35,7 @@ class RelayRuntime:
     telethon_client: TelegramClient
     notifier: Notifier
     state: RuntimeState
+    repo: StateRepository
 
 
 def setup_logging(level: str) -> None:
@@ -159,7 +162,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"setups_cached={len(state.setups_by_symbol)}\n"
         f"open_symbols={len(state.open_symbols)} ({', '.join(sorted(state.open_symbols)) if state.open_symbols else '-'})\n"
         f"tracked_positions={len(state.positions_by_symbol)}\n"
-        f"recent_decisions={len(state.recent_decisions)}",
+        f"closed_history={len(state.closed_positions)}\n"
+        f"recent_decisions={len(state.recent_decisions)}\n"
+        f"state_db_path={runtime.settings.state_db_path}",
     )
 
 
@@ -256,12 +261,50 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await safe_reply(update, "\n".join(lines))
 
 
+async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    n = 15
+    if context.args:
+        try:
+            n = max(1, min(50, int(context.args[0])))
+        except ValueError:
+            await safe_reply(update, "Usage: /history [count]  (count must be an integer, max 50)")
+            return
+
+    history = list(runtime.state.closed_positions)[-n:]
+    if not history:
+        await safe_reply(update, "No closed position history yet.")
+        return
+
+    lines = [f"Closed position history (last {len(history)}):"]
+    for rec in reversed(history):
+        lines.append(
+            f"- {rec.symbol} {rec.side} | status={rec.final_status} | reason={rec.close_reason} | "
+            f"tp1_hit={rec.tp1_hit} | sl_be={rec.sl_moved_to_breakeven} | closed_at={rec.closed_at}"
+        )
+    await safe_reply(update, "\n".join(lines))
+
+
+async def cmd_dbstats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    counts = runtime.repo.table_counts()
+    lines = ["DB table counts:"] + [f"- {k}: {v}" for k, v in counts.items()]
+    await safe_reply(update, "\n".join(lines))
+
+
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     runtime: RelayRuntime = context.bot_data["runtime"]
     if not is_allowed(update, runtime.settings):
         return
 
     decision = runtime.state.pause()
+    runtime.repo.persist_state_snapshot(runtime.state)
     await safe_reply(update, f"OK: {decision}")
 
 
@@ -271,6 +314,7 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     decision = runtime.state.resume()
+    runtime.repo.persist_state_snapshot(runtime.state)
     await safe_reply(update, f"OK: {decision}")
 
 
@@ -290,6 +334,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/replaylast - reprocess last 15 channel messages through state engine\n"
         "/replaylast 30 - reprocess last 30 messages (max 50)\n"
         "/positions - show tracked virtual positions\n"
+        "/history - show closed position history\n"
+        "/dbstats - show SQLite table row counts\n"
         "/pause - pause new entry acceptance\n"
         "/resume - resume new entry acceptance\n"
         "/help - show this help",
@@ -302,6 +348,9 @@ async def run_listener(settings: Settings) -> None:
 
     log = logging.getLogger("trade_relay.main")
     notifier = Notifier(settings.telegram_bot_token, settings.telegram_allowed_user_id)
+    repo = StateRepository(settings.state_db_path)
+    repo.init_db()
+    loaded_state = repo.load_state(one_position_per_symbol=settings.one_position_per_symbol)
 
     telethon_client = TelegramClient(
         settings.telegram_session_name,
@@ -313,7 +362,8 @@ async def run_listener(settings: Settings) -> None:
         settings=settings,
         telethon_client=telethon_client,
         notifier=notifier,
-        state=RuntimeState(one_position_per_symbol=settings.one_position_per_symbol),
+        state=loaded_state,
+        repo=repo,
     )
 
     @telethon_client.on(events.NewMessage(chats=settings.vip_channel_ids))
@@ -329,6 +379,7 @@ async def run_listener(settings: Settings) -> None:
         summary = summarize_event(parsed)
         message_key = f"live:{event.chat_id}:{event.id}"
         decision = process_signal_event(runtime.state, parsed, message_key)
+        runtime.repo.persist_state_snapshot(runtime.state)
         log.info("%s | %s | msg_id=%s", summary, decision, event.id)
         await runtime.notifier.send(f"{summary}\n{decision}")
 
@@ -342,6 +393,8 @@ async def run_listener(settings: Settings) -> None:
     bot_app.add_handler(CommandHandler("recent", cmd_recent))
     bot_app.add_handler(CommandHandler("replaylast", cmd_replaylast))
     bot_app.add_handler(CommandHandler("positions", cmd_positions))
+    bot_app.add_handler(CommandHandler("history", cmd_history))
+    bot_app.add_handler(CommandHandler("dbstats", cmd_dbstats))
     bot_app.add_handler(CommandHandler("pause", cmd_pause))
     bot_app.add_handler(CommandHandler("resume", cmd_resume))
     bot_app.add_handler(CommandHandler("help", cmd_help))
@@ -359,7 +412,7 @@ async def run_listener(settings: Settings) -> None:
         "Trade Relay listener started\n"
         f"Account: {username}\n"
         f"Watching channels: {', '.join(map(str, settings.vip_channel_ids))}\n"
-        "Bot commands: /ping /last /status /recent /replaylast /positions /pause /resume /help"
+        "Bot commands: /ping /last /status /recent /replaylast /positions /history /dbstats /pause /resume /help"
     )
 
     log.info(startup_message.replace("\n", " | "))

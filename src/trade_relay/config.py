@@ -25,6 +25,7 @@ class Settings:
     margin_mode: str
     one_position_per_symbol: bool
     log_level: str
+    state_db_path: str
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> "Settings":
@@ -54,4 +55,5 @@ class Settings:
             margin_mode=os.getenv("MARGIN_MODE", "cross").lower(),
             one_position_per_symbol=os.getenv("ONE_POSITION_PER_SYMBOL", "true").lower() == "true",
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            state_db_path=os.getenv("STATE_DB_PATH", "trade_relay.db"),
         )

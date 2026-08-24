@@ -30,8 +30,10 @@ Behavior in current MVP:
 - Watches `VIP_CHANNEL_IDS` via Telethon user session.
 - Parses signal/setup/entry/target/stop messages.
 - Applies in-memory state engine (dedup, setup cache, one-position-per-symbol).
+- Persists state to SQLite for restart recovery (`STATE_DB_PATH`).
 - Supports relay pause/resume for new entries.
 - Tracks virtual positions (dry-run lifecycle): TP1 partial + BE, TP2 close, SL close.
+- Tracks closed position history with close reason and timestamps.
 - Logs parsed events + decisions to terminal.
 - Sends plain-text event summaries + decisions to your control bot chat/user ID.
 - Does not place exchange orders yet.
@@ -43,6 +45,8 @@ Behavior in current MVP:
 - `/recent [count]`
 - `/replaylast [count]`
 - `/positions`
+- `/history [count]`
+- `/dbstats`
 - `/pause`
 - `/resume`
 

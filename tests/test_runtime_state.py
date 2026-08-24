@@ -73,7 +73,7 @@ class TestRuntimeState(unittest.TestCase):
         self.assertEqual(pos.entry_status, "OPEN_PARTIAL")
         self.assertAlmostEqual(pos.size_percent_open, 50.0)
 
-    def test_tp2_closes_position(self):
+    def test_tp2_closes_position_and_records_history(self):
         state = RuntimeState()
         process_signal_event(
             state,
@@ -97,6 +97,37 @@ class TestRuntimeState(unittest.TestCase):
         pos = state.positions_by_symbol["BTC/USDT"]
         self.assertEqual(pos.entry_status, "CLOSED_TP2")
         self.assertAlmostEqual(pos.size_percent_open, 0.0)
+        self.assertGreaterEqual(len(state.closed_positions), 1)
+        rec = state.closed_positions[-1]
+        self.assertEqual(rec.symbol, "BTC/USDT")
+        self.assertEqual(rec.final_status, "CLOSED_TP2")
+        self.assertEqual(rec.close_reason, "TARGET_2_PLUS_REACHED")
+
+    def test_stopped_out_records_history(self):
+        state = RuntimeState()
+        process_signal_event(
+            state,
+            SignalEvent(event_type=EventType.SETUP, symbol="LDO/USDT", side=Side.SHORT, setup=_setup("LDO/USDT")),
+            "k1",
+        )
+        process_signal_event(
+            state,
+            SignalEvent(event_type=EventType.ENTRY_TRIGGER, symbol="LDO/USDT", side=Side.SHORT),
+            "k2",
+        )
+
+        d3 = process_signal_event(
+            state,
+            SignalEvent(event_type=EventType.STOPPED_OUT, symbol="LDO/USDT", side=Side.SHORT),
+            "k3",
+        )
+
+        self.assertIn("STOPPED_OUT_CLOSED", d3)
+        self.assertGreaterEqual(len(state.closed_positions), 1)
+        rec = state.closed_positions[-1]
+        self.assertEqual(rec.symbol, "LDO/USDT")
+        self.assertEqual(rec.final_status, "CLOSED_SL")
+        self.assertEqual(rec.close_reason, "STOPPED_OUT")
 
     def test_pause_blocks_entry(self):
         state = RuntimeState()

@@ -26,6 +26,11 @@ from dotenv import load_dotenv  # noqa: E402
 
 from trade_relay.config import Settings  # noqa: E402
 from telethon import TelegramClient  # noqa: E402
+from telethon.tl.types import Channel  # noqa: E402
+
+
+TARGET_CHANNEL_NAME = "BITFA FUTURES"
+OUTPUT_FILE = PROJECT_ROOT / "telegram_dialogs.txt"
 
 
 async def main() -> None:
@@ -36,27 +41,40 @@ async def main() -> None:
         int(settings.telegram_api_id),
         settings.telegram_api_hash,
     ) as client:
-        print("\nYour dialogs (chats/groups/channels):\n")
-        print(f"{'ID':<20} {'TYPE':<10} TITLE")
-        print("-" * 70)
+        lines = [
+            "Your dialogs (chats/groups/channels):",
+            "",
+            f"{'ID':<20} {'TYPE':<10} {'VISIBILITY':<12} TITLE",
+            "-" * 70,
+        ]
 
         async for dialog in client.iter_dialogs():
             entity = dialog.entity
-            kind = getattr(entity, "kind", None)
-            if kind is None:
-                if getattr(entity, "broadcast", False):
-                    kind = "channel"
-                elif getattr(entity, "megagroup", False):
-                    kind = "supergroup"
-                else:
-                    kind = "chat"
+            if isinstance(entity, Channel):
+                kind = "channel"
+                visibility = "public" if entity.username else "private"
+            elif getattr(entity, "megagroup", False):
+                kind = "supergroup"
+                visibility = "public" if getattr(entity, "username", None) else "private"
+            else:
+                kind = "chat"
+                visibility = "-"
 
-            marker = " <-- VIP?" if kind == "channel" else ""
-            print(f"{dialog.id:<20} {kind:<10} {dialog.name}{marker}")
+            marker = " <-- BITFA FUTURES" if dialog.name.casefold() == TARGET_CHANNEL_NAME.casefold() else ""
+            lines.append(f"{dialog.id:<20} {kind:<10} {visibility:<12} {dialog.name}{marker}")
 
-        print("\nCopy the ID of your VIP channel into `.env`:")
-        print("VIP_CHANNEL_IDS=-1001234567890")
-        print("(multiple channels: comma-separated)\n")
+        lines.extend(
+            [
+                "",
+                "Copy the ID of your VIP channel into `.env`:",
+                "VIP_CHANNEL_IDS=-1001234567890",
+                "(multiple channels: comma-separated)",
+            ]
+        )
+        output = "\n".join(lines) + "\n"
+        print(f"\n{output}")
+        OUTPUT_FILE.write_text(output, encoding="utf-8")
+        print(f"Saved all entries to {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":

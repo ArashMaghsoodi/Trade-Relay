@@ -16,6 +16,7 @@ env/
 # Local environment
 .env
 *.session
+telegram_dialogs.txt
 
 # OS / editor
 .DS_Store

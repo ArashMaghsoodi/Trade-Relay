@@ -24,6 +24,7 @@ class Settings:
     risk_per_trade_percent: float
     margin_mode: str
     one_position_per_symbol: bool
+    log_level: str
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> "Settings":
@@ -52,4 +53,5 @@ class Settings:
             risk_per_trade_percent=float(os.getenv("RISK_PER_TRADE_PERCENT", "1")),
             margin_mode=os.getenv("MARGIN_MODE", "cross").lower(),
             one_position_per_symbol=os.getenv("ONE_POSITION_PER_SYMBOL", "true").lower() == "true",
+            log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )

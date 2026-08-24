@@ -17,7 +17,21 @@ Current status: Milestone 1 / Step 1 scaffold completed.
 ## Setup
 1) Create and fill `.env` from `.env.example`
 2) Use Python 3.11+
-3) Install deps (next step will add `requirements.txt`)
+3) Install dependencies:
+   - `python -m pip install -r requirements.txt`
+
+## Run the Step 2.1 listener (Telegram ingest + parsing + bot notification)
+- Config validation only:
+  - `PYTHONPATH=src python -m trade_relay.main --check-config`
+- Start live listener:
+  - `PYTHONPATH=src python -m trade_relay.main`
+
+Behavior in Step 2.1:
+- Watches `VIP_CHANNEL_IDS` via Telethon user session.
+- Parses signal/setup/entry/target/stop messages.
+- Logs parsed events to terminal.
+- Sends plain-text event summaries to your control bot chat/user ID.
+- Does not place exchange orders yet.
 
 ## Notes
 - `.env` is git-ignored.

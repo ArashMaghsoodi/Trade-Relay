@@ -30,18 +30,18 @@ class ToobitClient:
 
     def _headers(self) -> dict[str, str]:
         return {
-            "X-MBX-APIKEY": self.api_key,
+            "X-BB-APIKEY": self.api_key,
         }
 
     async def ping_futures(self) -> dict[str, Any]:
-        url = f"{self.futures_base_url.rstrip('/')}/fapi/v1/ping"
+        url = f"{self.futures_base_url.rstrip('/')}/api/v1/ping"
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             return resp.json() if resp.content else {"ok": True}
 
     async def account_info_futures(self) -> dict[str, Any]:
-        url = f"{self.futures_base_url.rstrip('/')}/fapi/v1/account"
+        url = f"{self.futures_base_url.rstrip('/')}/api/v1/account"
         params = self._signed_params()
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url, params=params, headers=self._headers())
@@ -50,7 +50,7 @@ class ToobitClient:
         return resp.json()
 
     async def position_risk_futures(self) -> list[dict[str, Any]]:
-        url = f"{self.futures_base_url.rstrip('/')}/fapi/v1/positionRisk"
+        url = f"{self.futures_base_url.rstrip('/')}/api/v1/positionRisk"
         params = self._signed_params()
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url, params=params, headers=self._headers())

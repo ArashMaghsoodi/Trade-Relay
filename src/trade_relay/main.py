@@ -152,6 +152,77 @@ async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await safe_reply(update, "\n".join(lines))
 
 
+def select_latest_setup(messages: list[object]) -> tuple[object, SignalEvent] | None:
+    """Select the newest parseable setup from Telethon's newest-first messages."""
+    for msg in messages:
+        parsed = parse_signal_message(getattr(msg, "raw_text", "") or "")
+        if parsed is not None and parsed.event_type == EventType.SETUP:
+            return msg, parsed
+    return None
+
+
+async def cmd_test_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    if not runtime.settings.vip_channel_ids:
+        await safe_reply(update, "VIP_CHANNEL_IDS is empty")
+        return
+
+    channel_id = runtime.settings.vip_channel_ids[0]
+    messages = []
+    async for msg in runtime.telethon_client.iter_messages(channel_id, limit=15):
+        if (msg.raw_text or "").strip():
+            messages.append(msg)
+
+    selected = select_latest_setup(messages)
+    if selected is None:
+        await safe_reply(update, "No parseable trade setup found in the last 15 messages.")
+        return
+
+    msg, setup_event = selected
+    run_key = f"test-order:{channel_id}:{msg.id}:{getattr(update, 'update_id', 0)}"
+    setup_decision = process_signal_event(runtime.state, setup_event, f"{run_key}:setup")
+    entry_event = SignalEvent(
+        event_type=EventType.ENTRY_TRIGGER,
+        symbol=setup_event.symbol,
+        side=setup_event.side,
+    )
+    entry_decision = process_signal_event(runtime.state, entry_event, f"{run_key}:entry")
+    execution_decision = entry_decision
+    if entry_decision.startswith("ENTRY_SKIPPED_ALREADY_OPEN"):
+        execution_decision = f"TEST_ENTRY_ACCEPTED_EXISTING_OPEN {entry_event.symbol} {entry_event.side.value}"
+
+    try:
+        mode_note = await maybe_create_order_intent_async(
+            runtime.settings,
+            runtime.state,
+            entry_event,
+            execution_decision,
+            runtime.toobit_client,
+        )
+    except ToobitAPIError as exc:
+        mode_note = f"ORDER_INTENT_FAILED {exc}"
+    except Exception as exc:
+        mode_note = f"ORDER_INTENT_FAILED {type(exc).__name__}: {exc}"
+
+    runtime.repo.persist_state_snapshot(runtime.state)
+    details = (
+        f"Test order from message [{msg.id}]\n"
+        f"{summarize_event(setup_event)}\n"
+        f"setup={setup_decision}\n"
+        f"entry={entry_decision}"
+    )
+    if mode_note:
+        details += f"\n{mode_note}"
+    if execution_decision != entry_decision:
+        details += "\nTEST_OVERRIDE: existing position retained; execution intent created for testing"
+    elif runtime.settings.trading_mode == "dry_run":
+        details += "\nDRY_RUN: no Toobit order intent created"
+    await safe_reply(update, details)
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     runtime: RelayRuntime = context.bot_data["runtime"]
     if not is_allowed(update, runtime.settings):
@@ -437,6 +508,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/ping - health check\n"
         "/last - classify last 15 messages from first VIP channel\n"
         "/last 30 - classify last 30 messages (max 50)\n"
+        "/test_order - create an order from the newest setup in the last 15 messages\n"
         "/mode - show current mode/leverage/risk\n"
         "/set_leverage [x] - view/update leverage in runtime\n"
         "/status - show runtime state counters\n"
@@ -519,6 +591,7 @@ async def run_listener(settings: Settings) -> None:
     bot_app.bot_data["runtime"] = runtime
     bot_app.add_handler(CommandHandler("ping", cmd_ping))
     bot_app.add_handler(CommandHandler("last", cmd_last))
+    bot_app.add_handler(CommandHandler("test_order", cmd_test_order))
     bot_app.add_handler(CommandHandler("mode", cmd_mode))
     bot_app.add_handler(CommandHandler("set_leverage", cmd_set_leverage))
     bot_app.add_handler(CommandHandler("status", cmd_status))

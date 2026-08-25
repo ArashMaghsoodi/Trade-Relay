@@ -6,11 +6,18 @@ from trade_relay.config import Settings
 from trade_relay.models import EventType, Side, SignalEvent, SignalSetup
 from trade_relay.order_router import maybe_create_order_intent_async
 from trade_relay.runtime_state import RuntimeState
+from trade_relay.main import select_latest_setup
 
 
 class _FakeToobit:
     async def account_info_futures(self):
         return {"totalWalletBalance": "100000"}
+
+
+class _Message:
+    def __init__(self, message_id: int, text: str):
+        self.id = message_id
+        self.raw_text = text
 
 
 def _settings(mode: str = "paper") -> Settings:
@@ -53,6 +60,26 @@ def _state_with_setup() -> RuntimeState:
 
 
 class TestOrderRouter(unittest.IsolatedAsyncioTestCase):
+    def test_select_latest_setup_from_newest_first_messages(self):
+        older = _Message(
+            5547,
+            "LBANK Futures SHORT #ETH/USDT Enter price: 2481.8 - 2496.6 "
+            "TP1: 2466.5 TP2: 2451.1 TP3: 2436.1 Normal Stop Loss: 2512.5 #Signal",
+        )
+        newer = _Message(
+            5550,
+            "LBANK Futures SHORT #AVAX/USDT Enter price: 7.530 - 7.616 "
+            "TP1: 7.441 TP2: 7.352 TP3: 7.263 Normal Stop Loss: 7.708 #Signal",
+        )
+
+        selected = select_latest_setup([newer, older])
+
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        message, event = selected
+        self.assertEqual(message.id, 5550)
+        self.assertEqual(event.symbol, "AVAX/USDT")
+
     async def test_paper_intent_created_on_accepted_entry(self):
         settings = _settings("paper")
         state = _state_with_setup()
@@ -97,6 +124,25 @@ class TestOrderRouter(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(note)
         self.assertEqual(len(state.order_intents), 0)
+
+    async def test_explicit_test_entry_can_create_intent_for_existing_position(self):
+        settings = _settings("paper")
+        state = _state_with_setup()
+        state.open_symbols.add("BTC/USDT")
+        event = SignalEvent(event_type=EventType.ENTRY_TRIGGER, symbol="BTC/USDT", side=Side.SHORT)
+
+        note = await maybe_create_order_intent_async(
+            settings,
+            state,
+            event,
+            "TEST_ENTRY_ACCEPTED_EXISTING_OPEN BTC/USDT SHORT",
+            _FakeToobit(),
+        )
+
+        self.assertIsNotNone(note)
+        assert note is not None
+        self.assertIn("PAPER_ORDER_INTENT", note)
+        self.assertEqual(len(state.order_intents), 1)
 
 
 if __name__ == "__main__":

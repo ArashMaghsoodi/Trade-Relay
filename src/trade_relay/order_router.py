@@ -29,7 +29,10 @@ async def maybe_create_order_intent_async(
     if event.event_type != EventType.ENTRY_TRIGGER:
         return None
 
-    if not decision.startswith("ENTRY_ACCEPTED_DRYRUN"):
+    if not (
+        decision.startswith("ENTRY_ACCEPTED_DRYRUN")
+        or decision.startswith("TEST_ENTRY_ACCEPTED_EXISTING_OPEN")
+    ):
         return None
 
     setup = state.setups_by_symbol.get(event.symbol)

@@ -54,6 +54,7 @@ Behavior in current MVP:
 - `/history [count]`
 - `/dbstats`
 - `/toobit_ping`
+- `/test_order` (select newest setup from the last 15 messages and test execution; existing tracked positions are retained)
 - `/pause`
 - `/resume`
 

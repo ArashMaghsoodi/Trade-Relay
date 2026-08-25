@@ -61,7 +61,7 @@ class Settings:
             toobit_api_key=os.getenv("TOOBIT_API_KEY", ""),
             toobit_api_secret=os.getenv("TOOBIT_API_SECRET", ""),
             toobit_base_url=os.getenv("TOOBIT_BASE_URL", "https://api.toobit.com"),
-            toobit_futures_base_url=os.getenv("TOOBIT_FUTURES_BASE_URL", "https://fapi.toobit.com"),
+            toobit_futures_base_url=os.getenv("TOOBIT_FUTURES_BASE_URL", "https://api.toobit.com"),
             trading_mode=trading_mode,
             default_leverage=int(os.getenv("DEFAULT_LEVERAGE", "10")),
             max_leverage=int(os.getenv("MAX_LEVERAGE", "15")),

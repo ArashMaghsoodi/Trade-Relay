@@ -35,6 +35,7 @@ Behavior in current MVP:
 - Tracks virtual positions (dry-run lifecycle): TP1 partial + BE, TP2 close, SL close.
 - Tracks closed position history with close reason and timestamps.
 - In `paper`/`live` modes, creates order intents on accepted entries.
+- Paper sizing uses live demo wallet balance fetched from Toobit account endpoint.
 - `live` mode is intentionally blocked to intent-only (no real orders yet).
 - Logs parsed events + decisions to terminal.
 - Sends plain-text event summaries + decisions to your control bot chat/user ID.
@@ -49,6 +50,7 @@ Behavior in current MVP:
 - `/replaylast [count]`
 - `/positions`
 - `/orders [count]`
+- `/summary`
 - `/history [count]`
 - `/dbstats`
 - `/toobit_ping`

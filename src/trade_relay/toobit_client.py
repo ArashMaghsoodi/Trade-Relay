@@ -48,3 +48,62 @@ class ToobitClient:
         if resp.status_code >= 400:
             raise ToobitAPIError(f"Toobit account_info error {resp.status_code}: {resp.text}")
         return resp.json()
+
+    async def position_risk_futures(self) -> list[dict[str, Any]]:
+        url = f"{self.futures_base_url.rstrip('/')}/fapi/v1/positionRisk"
+        params = self._signed_params()
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, params=params, headers=self._headers())
+        if resp.status_code >= 400:
+            raise ToobitAPIError(f"Toobit position_risk error {resp.status_code}: {resp.text}")
+        data = resp.json()
+        if not isinstance(data, list):
+            raise ToobitAPIError(f"Unexpected position_risk payload: {type(data).__name__}")
+        return data
+
+
+def extract_summary_snapshot(
+    account: dict[str, Any],
+    positions: list[dict[str, Any]],
+    today_realized_pnl: float = 0.0,
+) -> dict[str, Any]:
+    total_wallet_balance = float(account.get("totalWalletBalance", 0.0) or 0.0)
+    total_unrealized_profit = float(account.get("totalUnrealizedProfit", 0.0) or 0.0)
+
+    open_positions: list[dict[str, Any]] = []
+    for row in positions:
+        amt = float(row.get("positionAmt", 0.0) or 0.0)
+        if amt == 0:
+            continue
+
+        symbol = str(row.get("symbol", ""))
+        side = "Long" if amt > 0 else "Short"
+        leverage = int(float(row.get("leverage", 0) or 0))
+        entry_price = float(row.get("entryPrice", 0.0) or 0.0)
+        mark_price = float(row.get("markPrice", 0.0) or 0.0)
+        isolated_margin = float(row.get("isolatedMargin", 0.0) or 0.0)
+        unrealized = float(row.get("unRealizedProfit", 0.0) or 0.0)
+
+        pnl_percent = 0.0
+        if isolated_margin > 0:
+            pnl_percent = (unrealized / isolated_margin) * 100.0
+
+        open_positions.append(
+            {
+                "symbol": symbol,
+                "side": side,
+                "leverage": leverage,
+                "entry_price": entry_price,
+                "mark_price": mark_price,
+                "margin_usdt": isolated_margin,
+                "unrealized_pnl": unrealized,
+                "unrealized_pnl_percent": pnl_percent,
+            }
+        )
+
+    return {
+        "current_balance": total_wallet_balance,
+        "today_realized_pnl": today_realized_pnl,
+        "unrealized_pnl_total": total_unrealized_profit,
+        "open_positions": open_positions,
+    }

@@ -27,7 +27,6 @@ class Settings:
     default_leverage: int
     max_leverage: int
     risk_per_trade_percent: float
-    paper_account_balance_usdt: float
     margin_mode: str
     one_position_per_symbol: bool
     log_level: str
@@ -67,7 +66,6 @@ class Settings:
             default_leverage=int(os.getenv("DEFAULT_LEVERAGE", "10")),
             max_leverage=int(os.getenv("MAX_LEVERAGE", "15")),
             risk_per_trade_percent=float(os.getenv("RISK_PER_TRADE_PERCENT", "1")),
-            paper_account_balance_usdt=float(os.getenv("PAPER_ACCOUNT_BALANCE_USDT", "1000")),
             margin_mode=os.getenv("MARGIN_MODE", "cross").lower(),
             one_position_per_symbol=os.getenv("ONE_POSITION_PER_SYMBOL", "true").lower() == "true",
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),

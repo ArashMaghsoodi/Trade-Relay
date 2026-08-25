@@ -17,7 +17,7 @@ if __package__ in (None, ""):
     from trade_relay.config import Settings
     from trade_relay.models import EventType, SignalEvent
     from trade_relay.notifier import Notifier
-    from trade_relay.order_router import maybe_create_order_intent
+    from trade_relay.order_router import build_summary_text, maybe_create_order_intent_async
     from trade_relay.parser import parse_signal_message
     from trade_relay.runtime_state import RuntimeState, process_signal_event
     from trade_relay.state_repo import StateRepository
@@ -26,7 +26,7 @@ else:
     from .config import Settings
     from .models import EventType, SignalEvent
     from .notifier import Notifier
-    from .order_router import maybe_create_order_intent
+    from .order_router import build_summary_text, maybe_create_order_intent_async
     from .parser import parse_signal_message
     from .runtime_state import RuntimeState, process_signal_event
     from .state_repo import StateRepository
@@ -184,8 +184,7 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Mode:\n"
         f"trading_mode={runtime.settings.trading_mode}\n"
         f"leverage={runtime.settings.default_leverage} (max={runtime.settings.max_leverage})\n"
-        f"risk_percent={runtime.settings.risk_per_trade_percent}\n"
-        f"paper_balance={runtime.settings.paper_account_balance_usdt}",
+        f"risk_percent={runtime.settings.risk_per_trade_percent}",
     )
 
 
@@ -379,6 +378,24 @@ async def cmd_toobit_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await safe_reply(update, f"Toobit connectivity failed: {exc}")
 
 
+async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    if not runtime.settings.toobit_api_key or not runtime.settings.toobit_api_secret:
+        await safe_reply(update, "Toobit API key/secret not set in .env")
+        return
+
+    try:
+        text = await build_summary_text(runtime.toobit_client)
+        await safe_reply(update, text)
+    except ToobitAPIError as exc:
+        await safe_reply(update, f"Toobit API error: {exc}")
+    except Exception as exc:
+        await safe_reply(update, f"Summary failed: {exc}")
+
+
 async def cmd_dbstats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     runtime: RelayRuntime = context.bot_data["runtime"]
     if not is_allowed(update, runtime.settings):
@@ -428,6 +445,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/replaylast 30 - reprocess last 30 messages (max 50)\n"
         "/positions - show tracked virtual positions\n"
         "/orders [count] - show latest order intents\n"
+        "/summary - account + open positions summary from Toobit\n"
         "/history - show closed position history\n"
         "/dbstats - show SQLite table row counts\n"
         "/toobit_ping - test Toobit futures connectivity\n"
@@ -482,7 +500,13 @@ async def run_listener(settings: Settings) -> None:
         summary = summarize_event(parsed)
         message_key = f"live:{event.chat_id}:{event.id}"
         decision = process_signal_event(runtime.state, parsed, message_key)
-        mode_note = maybe_create_order_intent(runtime.settings, runtime.state, parsed, decision)
+        mode_note = await maybe_create_order_intent_async(
+            runtime.settings,
+            runtime.state,
+            parsed,
+            decision,
+            runtime.toobit_client,
+        )
         if mode_note:
             decision = f"{decision} | {mode_note}"
         runtime.repo.persist_state_snapshot(runtime.state)
@@ -502,6 +526,7 @@ async def run_listener(settings: Settings) -> None:
     bot_app.add_handler(CommandHandler("replaylast", cmd_replaylast))
     bot_app.add_handler(CommandHandler("positions", cmd_positions))
     bot_app.add_handler(CommandHandler("orders", cmd_orders))
+    bot_app.add_handler(CommandHandler("summary", cmd_summary))
     bot_app.add_handler(CommandHandler("history", cmd_history))
     bot_app.add_handler(CommandHandler("dbstats", cmd_dbstats))
     bot_app.add_handler(CommandHandler("toobit_ping", cmd_toobit_ping))
@@ -522,7 +547,7 @@ async def run_listener(settings: Settings) -> None:
         "Trade Relay listener started\n"
         f"Account: {username}\n"
         f"Watching channels: {', '.join(map(str, settings.vip_channel_ids))}\n"
-        "Bot commands: /ping /last /mode /set_leverage /status /recent /replaylast /positions /orders /history /dbstats /toobit_ping /pause /resume /help"
+        "Bot commands: /ping /last /mode /set_leverage /status /recent /replaylast /positions /orders /summary /history /dbstats /toobit_ping /pause /resume /help"
     )
 
     log.info(startup_message.replace("\n", " | "))
@@ -558,8 +583,6 @@ def print_safe_config_summary(settings: Settings) -> None:
     print(f"Allowed bot user ID: {settings.telegram_allowed_user_id}")
     print(f"Trading mode: {settings.trading_mode}")
     print(f"Default leverage: {settings.default_leverage}")
-    print(f"Paper balance: {settings.paper_account_balance_usdt}")
-
 
 async def async_main() -> None:
     args = parse_args()

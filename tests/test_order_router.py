@@ -4,15 +4,20 @@ import unittest
 
 from trade_relay.config import Settings
 from trade_relay.models import EventType, Side, SignalEvent, SignalSetup
-from trade_relay.order_router import maybe_create_order_intent
+from trade_relay.order_router import maybe_create_order_intent_async
 from trade_relay.runtime_state import RuntimeState
+
+
+class _FakeToobit:
+    async def account_info_futures(self):
+        return {"totalWalletBalance": "100000"}
 
 
 def _settings(mode: str = "paper") -> Settings:
     return Settings(
         telegram_api_id="1",
         telegram_api_hash="h",
-        telegram_phone="+10000000000",
+        telegram_phone="+100****0000",
         telegram_session_name="s",
         vip_channel_ids=[-1001],
         telegram_bot_token="b",
@@ -25,7 +30,6 @@ def _settings(mode: str = "paper") -> Settings:
         default_leverage=10,
         max_leverage=15,
         risk_per_trade_percent=1.0,
-        paper_account_balance_usdt=1000.0,
         margin_mode="cross",
         one_position_per_symbol=True,
         log_level="INFO",
@@ -48,31 +52,49 @@ def _state_with_setup() -> RuntimeState:
     return st
 
 
-class TestOrderRouter(unittest.TestCase):
-    def test_paper_intent_created_on_accepted_entry(self):
+class TestOrderRouter(unittest.IsolatedAsyncioTestCase):
+    async def test_paper_intent_created_on_accepted_entry(self):
         settings = _settings("paper")
         state = _state_with_setup()
         event = SignalEvent(event_type=EventType.ENTRY_TRIGGER, symbol="BTC/USDT", side=Side.SHORT)
-        note = maybe_create_order_intent(settings, state, event, "ENTRY_ACCEPTED_DRYRUN BTC/USDT SHORT")
+        note = await maybe_create_order_intent_async(
+            settings,
+            state,
+            event,
+            "ENTRY_ACCEPTED_DRYRUN BTC/USDT SHORT",
+            _FakeToobit(),
+        )
         self.assertIsNotNone(note)
         assert note is not None
         self.assertIn("PAPER_ORDER_INTENT", note)
         self.assertEqual(len(state.order_intents), 1)
 
-    def test_live_mode_is_intent_only_blocked(self):
+    async def test_live_mode_is_intent_only_blocked(self):
         settings = _settings("live")
         state = _state_with_setup()
         event = SignalEvent(event_type=EventType.ENTRY_TRIGGER, symbol="BTC/USDT", side=Side.SHORT)
-        note = maybe_create_order_intent(settings, state, event, "ENTRY_ACCEPTED_DRYRUN BTC/USDT SHORT")
+        note = await maybe_create_order_intent_async(
+            settings,
+            state,
+            event,
+            "ENTRY_ACCEPTED_DRYRUN BTC/USDT SHORT",
+            _FakeToobit(),
+        )
         self.assertIsNotNone(note)
         assert note is not None
         self.assertIn("LIVE_BLOCKED_INTENT_ONLY", note)
 
-    def test_non_accepted_entry_does_nothing(self):
+    async def test_non_accepted_entry_does_nothing(self):
         settings = _settings("paper")
         state = _state_with_setup()
         event = SignalEvent(event_type=EventType.ENTRY_TRIGGER, symbol="BTC/USDT", side=Side.SHORT)
-        note = maybe_create_order_intent(settings, state, event, "ENTRY_SKIPPED_NO_SETUP")
+        note = await maybe_create_order_intent_async(
+            settings,
+            state,
+            event,
+            "ENTRY_SKIPPED_NO_SETUP",
+            _FakeToobit(),
+        )
         self.assertIsNone(note)
         self.assertEqual(len(state.order_intents), 0)
 

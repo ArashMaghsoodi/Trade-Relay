@@ -78,7 +78,18 @@ class StateRepository:
                     decision TEXT NOT NULL,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
-                    """
+
+                CREATE TABLE IF NOT EXISTS order_intents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    leverage INTEGER NOT NULL,
+                    risk_percent REAL NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                """
                 )
 
     def load_state(self, one_position_per_symbol: bool) -> RuntimeState:
@@ -142,6 +153,22 @@ class StateRepository:
             for row in conn.execute("SELECT decision FROM decisions ORDER BY id DESC LIMIT 300"):
                 state.recent_decisions.appendleft(row["decision"])
 
+            for row in conn.execute(
+                "SELECT symbol, side, quantity, leverage, risk_percent, reason FROM order_intents ORDER BY id DESC LIMIT 400"
+            ):
+                from .execution import PaperOrderIntent
+
+                state.order_intents.appendleft(
+                    PaperOrderIntent(
+                        symbol=row["symbol"],
+                        side=row["side"],
+                        quantity=float(row["quantity"]),
+                        leverage=int(row["leverage"]),
+                        risk_percent=float(row["risk_percent"]),
+                        reason=row["reason"],
+                    )
+                )
+
         return state
 
     def persist_state_snapshot(self, state: RuntimeState) -> None:
@@ -204,6 +231,22 @@ class StateRepository:
                     [(d,) for d in state.recent_decisions],
                 )
 
+                conn.execute("DELETE FROM order_intents")
+                conn.executemany(
+                    "INSERT INTO order_intents(symbol, side, quantity, leverage, risk_percent, reason) VALUES(?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            oi.symbol,
+                            oi.side,
+                            oi.quantity,
+                            oi.leverage,
+                            oi.risk_percent,
+                            oi.reason,
+                        )
+                        for oi in state.order_intents
+                    ],
+                )
+
                 conn.execute("DELETE FROM closed_positions")
                 conn.executemany(
                     "INSERT INTO closed_positions(symbol, side, final_status, opened_at, closed_at, close_reason, tp1_hit, sl_moved_to_breakeven) "
@@ -224,7 +267,7 @@ class StateRepository:
                 )
 
     def table_counts(self) -> dict[str, int]:
-        tables = ["setups", "open_positions", "closed_positions", "processed_messages", "decisions"]
+        tables = ["setups", "open_positions", "closed_positions", "processed_messages", "decisions", "order_intents"]
         out: dict[str, int] = {}
         with closing(self.connect()) as conn:
             for t in tables:

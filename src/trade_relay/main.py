@@ -17,16 +17,20 @@ if __package__ in (None, ""):
     from trade_relay.config import Settings
     from trade_relay.models import EventType, SignalEvent
     from trade_relay.notifier import Notifier
+    from trade_relay.order_router import maybe_create_order_intent
     from trade_relay.parser import parse_signal_message
     from trade_relay.runtime_state import RuntimeState, process_signal_event
     from trade_relay.state_repo import StateRepository
+    from trade_relay.toobit_client import ToobitAPIError, ToobitClient
 else:
     from .config import Settings
     from .models import EventType, SignalEvent
     from .notifier import Notifier
+    from .order_router import maybe_create_order_intent
     from .parser import parse_signal_message
     from .runtime_state import RuntimeState, process_signal_event
     from .state_repo import StateRepository
+    from .toobit_client import ToobitAPIError, ToobitClient
 
 
 @dataclass(slots=True)
@@ -36,6 +40,7 @@ class RelayRuntime:
     notifier: Notifier
     state: RuntimeState
     repo: StateRepository
+    toobit_client: ToobitClient
 
 
 def setup_logging(level: str) -> None:
@@ -163,9 +168,50 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"open_symbols={len(state.open_symbols)} ({', '.join(sorted(state.open_symbols)) if state.open_symbols else '-'})\n"
         f"tracked_positions={len(state.positions_by_symbol)}\n"
         f"closed_history={len(state.closed_positions)}\n"
+        f"order_intents={len(state.order_intents)}\n"
         f"recent_decisions={len(state.recent_decisions)}\n"
         f"state_db_path={runtime.settings.state_db_path}",
     )
+
+
+async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    await safe_reply(
+        update,
+        "Mode:\n"
+        f"trading_mode={runtime.settings.trading_mode}\n"
+        f"leverage={runtime.settings.default_leverage} (max={runtime.settings.max_leverage})\n"
+        f"risk_percent={runtime.settings.risk_per_trade_percent}\n"
+        f"paper_balance={runtime.settings.paper_account_balance_usdt}",
+    )
+
+
+async def cmd_set_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    if not context.args:
+        await safe_reply(update, f"Current leverage: {runtime.settings.default_leverage}")
+        return
+
+    try:
+        lev = int(context.args[0])
+    except ValueError:
+        await safe_reply(update, "Usage: /set_leverage <integer>")
+        return
+
+    if lev < 1 or lev > runtime.settings.max_leverage:
+        await safe_reply(update, f"Leverage must be between 1 and {runtime.settings.max_leverage}")
+        return
+
+    runtime.settings.default_leverage = lev
+    runtime.state.add_recent(f"LEVERAGE_UPDATED {lev}")
+    runtime.repo.persist_state_snapshot(runtime.state)
+    await safe_reply(update, f"OK: leverage set to {lev}")
 
 
 async def cmd_recent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -288,6 +334,51 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await safe_reply(update, "\n".join(lines))
 
 
+async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    n = 15
+    if context.args:
+        try:
+            n = max(1, min(50, int(context.args[0])))
+        except ValueError:
+            await safe_reply(update, "Usage: /orders [count]  (count must be an integer, max 50)")
+            return
+
+    intents = list(runtime.state.order_intents)[-n:]
+    if not intents:
+        await safe_reply(update, "No paper/live order intents recorded yet.")
+        return
+
+    lines = [f"Last {len(intents)} order intents:"]
+    for oi in reversed(intents):
+        lines.append(
+            f"- {oi.symbol} {oi.side} qty={oi.quantity} lev={oi.leverage} risk={oi.risk_percent}% reason={oi.reason}"
+        )
+    await safe_reply(update, "\n".join(lines))
+
+
+async def cmd_toobit_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    runtime: RelayRuntime = context.bot_data["runtime"]
+    if not is_allowed(update, runtime.settings):
+        return
+
+    if not runtime.settings.toobit_api_key or not runtime.settings.toobit_api_secret:
+        await safe_reply(update, "Toobit API key/secret not set in .env")
+        return
+
+    try:
+        await runtime.toobit_client.ping_futures()
+        await runtime.toobit_client.account_info_futures()
+        await safe_reply(update, "Toobit connectivity OK (futures ping + signed account endpoint).")
+    except ToobitAPIError as exc:
+        await safe_reply(update, f"Toobit API error: {exc}")
+    except Exception as exc:
+        await safe_reply(update, f"Toobit connectivity failed: {exc}")
+
+
 async def cmd_dbstats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     runtime: RelayRuntime = context.bot_data["runtime"]
     if not is_allowed(update, runtime.settings):
@@ -329,13 +420,17 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/ping - health check\n"
         "/last - classify last 15 messages from first VIP channel\n"
         "/last 30 - classify last 30 messages (max 50)\n"
+        "/mode - show current mode/leverage/risk\n"
+        "/set_leverage [x] - view/update leverage in runtime\n"
         "/status - show runtime state counters\n"
         "/recent - show last 15 state decisions\n"
         "/replaylast - reprocess last 15 channel messages through state engine\n"
         "/replaylast 30 - reprocess last 30 messages (max 50)\n"
         "/positions - show tracked virtual positions\n"
+        "/orders [count] - show latest order intents\n"
         "/history - show closed position history\n"
         "/dbstats - show SQLite table row counts\n"
+        "/toobit_ping - test Toobit futures connectivity\n"
         "/pause - pause new entry acceptance\n"
         "/resume - resume new entry acceptance\n"
         "/help - show this help",
@@ -358,12 +453,20 @@ async def run_listener(settings: Settings) -> None:
         settings.telegram_api_hash,
     )
 
+    toobit_client = ToobitClient(
+        api_key=settings.toobit_api_key,
+        api_secret=settings.toobit_api_secret,
+        base_url=settings.toobit_base_url,
+        futures_base_url=settings.toobit_futures_base_url,
+    )
+
     runtime = RelayRuntime(
         settings=settings,
         telethon_client=telethon_client,
         notifier=notifier,
         state=loaded_state,
         repo=repo,
+        toobit_client=toobit_client,
     )
 
     @telethon_client.on(events.NewMessage(chats=settings.vip_channel_ids))
@@ -379,6 +482,9 @@ async def run_listener(settings: Settings) -> None:
         summary = summarize_event(parsed)
         message_key = f"live:{event.chat_id}:{event.id}"
         decision = process_signal_event(runtime.state, parsed, message_key)
+        mode_note = maybe_create_order_intent(runtime.settings, runtime.state, parsed, decision)
+        if mode_note:
+            decision = f"{decision} | {mode_note}"
         runtime.repo.persist_state_snapshot(runtime.state)
         log.info("%s | %s | msg_id=%s", summary, decision, event.id)
         await runtime.notifier.send(f"{summary}\n{decision}")
@@ -389,12 +495,16 @@ async def run_listener(settings: Settings) -> None:
     bot_app.bot_data["runtime"] = runtime
     bot_app.add_handler(CommandHandler("ping", cmd_ping))
     bot_app.add_handler(CommandHandler("last", cmd_last))
+    bot_app.add_handler(CommandHandler("mode", cmd_mode))
+    bot_app.add_handler(CommandHandler("set_leverage", cmd_set_leverage))
     bot_app.add_handler(CommandHandler("status", cmd_status))
     bot_app.add_handler(CommandHandler("recent", cmd_recent))
     bot_app.add_handler(CommandHandler("replaylast", cmd_replaylast))
     bot_app.add_handler(CommandHandler("positions", cmd_positions))
+    bot_app.add_handler(CommandHandler("orders", cmd_orders))
     bot_app.add_handler(CommandHandler("history", cmd_history))
     bot_app.add_handler(CommandHandler("dbstats", cmd_dbstats))
+    bot_app.add_handler(CommandHandler("toobit_ping", cmd_toobit_ping))
     bot_app.add_handler(CommandHandler("pause", cmd_pause))
     bot_app.add_handler(CommandHandler("resume", cmd_resume))
     bot_app.add_handler(CommandHandler("help", cmd_help))
@@ -412,7 +522,7 @@ async def run_listener(settings: Settings) -> None:
         "Trade Relay listener started\n"
         f"Account: {username}\n"
         f"Watching channels: {', '.join(map(str, settings.vip_channel_ids))}\n"
-        "Bot commands: /ping /last /status /recent /replaylast /positions /history /dbstats /pause /resume /help"
+        "Bot commands: /ping /last /mode /set_leverage /status /recent /replaylast /positions /orders /history /dbstats /toobit_ping /pause /resume /help"
     )
 
     log.info(startup_message.replace("\n", " | "))
@@ -448,6 +558,7 @@ def print_safe_config_summary(settings: Settings) -> None:
     print(f"Allowed bot user ID: {settings.telegram_allowed_user_id}")
     print(f"Trading mode: {settings.trading_mode}")
     print(f"Default leverage: {settings.default_leverage}")
+    print(f"Paper balance: {settings.paper_account_balance_usdt}")
 
 
 async def async_main() -> None:

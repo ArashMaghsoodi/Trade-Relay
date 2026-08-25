@@ -34,19 +34,24 @@ Behavior in current MVP:
 - Supports relay pause/resume for new entries.
 - Tracks virtual positions (dry-run lifecycle): TP1 partial + BE, TP2 close, SL close.
 - Tracks closed position history with close reason and timestamps.
+- In `paper`/`live` modes, creates order intents on accepted entries.
+- `live` mode is intentionally blocked to intent-only (no real orders yet).
 - Logs parsed events + decisions to terminal.
 - Sends plain-text event summaries + decisions to your control bot chat/user ID.
-- Does not place exchange orders yet.
 
 ## Bot test commands (temporary)
 - `/ping`
 - `/last [count]`
+- `/mode`
+- `/set_leverage [x]`
 - `/status`
 - `/recent [count]`
 - `/replaylast [count]`
 - `/positions`
+- `/orders [count]`
 - `/history [count]`
 - `/dbstats`
+- `/toobit_ping`
 - `/pause`
 - `/resume`
 

@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from .execution import PaperOrderIntent
 from .models import EventType, SignalEvent, SignalSetup
 
 
@@ -45,6 +46,7 @@ class RuntimeState:
     open_symbols: set[str] = field(default_factory=set)
     positions_by_symbol: dict[str, VirtualPosition] = field(default_factory=dict)
     closed_positions: deque[ClosedPositionRecord] = field(default_factory=lambda: deque(maxlen=400))
+    order_intents: deque[PaperOrderIntent] = field(default_factory=lambda: deque(maxlen=400))
     processed_message_keys: deque[str] = field(default_factory=lambda: deque(maxlen=2000))
     _processed_lookup: set[str] = field(default_factory=set)
     recent_decisions: deque[str] = field(default_factory=lambda: deque(maxlen=300))
@@ -75,6 +77,9 @@ class RuntimeState:
         decision = "RELAY_RESUMED"
         self.add_recent(decision)
         return decision
+
+    def add_order_intent(self, intent: PaperOrderIntent) -> None:
+        self.order_intents.append(intent)
 
 
 def _close_position(state: RuntimeState, symbol: str, final_status: str, close_reason: str) -> None:
